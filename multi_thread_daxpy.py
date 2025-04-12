@@ -29,13 +29,37 @@ system.cpu = [MinorCPU(cpu_id=i) for i in range(args.num_cores)]
 for cpu in system.cpu:
     cpu.createInterruptController()
 
+# Create L1 caches
+system.l1dcaches = [Cache(size='32kB', assoc=8, 
+               tag_latency=1, data_latency=1, response_latency=1,
+               mshrs=8, tgts_per_mshr=4) for _ in range(args.num_cores)]
+system.l1icaches = [Cache(size='32kB', assoc=8,
+               tag_latency=1, data_latency=1, response_latency=1,
+               mshrs=8, tgts_per_mshr=4) for _ in range(args.num_cores)]
+
+# Create L2 cache
+system.l2cache = Cache(size='256kB', assoc=16,
+                      tag_latency=2, data_latency=2, response_latency=2,
+                      mshrs=16, tgts_per_mshr=4)
+
 # Create a memory bus
 system.membus = SystemXBar()
 
-# Connect CPU ports to the membus
-for cpu in system.cpu:
-    cpu.icache_port = system.membus.cpu_side_ports
-    cpu.dcache_port = system.membus.cpu_side_ports
+# Create a cache bus
+system.cachebus = SystemXBar()
+
+# Connect CPU ports to the cache bus
+for i in range(args.num_cores):
+    system.cpu[i].icache_port = system.l1icaches[i].cpu_side
+    system.cpu[i].dcache_port = system.l1dcaches[i].cpu_side
+    
+    # Connect L1 caches to L2 cache
+    system.l1dcaches[i].mem_side = system.cachebus.cpu_side_ports
+    system.l1icaches[i].mem_side = system.cachebus.cpu_side_ports
+
+# Connect L2 cache to memory
+system.l2cache.cpu_side = system.cachebus.mem_side_ports
+system.l2cache.mem_side = system.membus.cpu_side_ports
 
 # Create a memory controller
 system.mem_ctrl = MemCtrl()
@@ -47,12 +71,17 @@ system.mem_ctrl.port = system.membus.mem_side_ports
 binary = 'tests/test-progs/multi_thread_daxpy'
 system.workload = SEWorkload.init_compatible(binary)
 
-process = Process()
-process.cmd = [binary, str(args.vector_size)]
+# Create a process for each core
+processes = []
+for i in range(args.num_cores):
+    process = Process()
+    process.pid = 100 + i
+    process.cmd = [binary, str(args.vector_size)]
+    processes.append(process)
 
-# Assign the process to all cores
-for cpu in system.cpu:
-    cpu.workload = process
+# Assign each process to a different core
+for i, cpu in enumerate(system.cpu):
+    cpu.workload = processes[i]
     cpu.createThreads()
 
 # Create the root
